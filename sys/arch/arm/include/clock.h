@@ -29,6 +29,8 @@ struct clk {
 	int			(*set_parent) (struct clk *, struct clk *);
 };
 
+void				clk_init(void);
+
 struct clk *			clk_get(const char *);
 int				clk_register(struct clk *, char *);
 int				clk_enable(struct clk *);

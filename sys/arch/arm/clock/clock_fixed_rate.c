@@ -18,6 +18,8 @@
 #include <sys/systm.h>
 #include <sys/malloc.h>
 #include <machine/clock.h>
+#include <machine/fdt.h>
+#include <arm/clock/clockvar.h>
 
 struct clk_fixed
 {
@@ -56,3 +58,16 @@ err:
 	return NULL;
 }
 
+void
+clk_fdt_fixed_rate(void *node)
+{
+	char *names = fdt_node_name(node);
+	uint32_t freq;
+
+	fdt_node_property(node, "clock-output-names", &names);
+
+	if (!fdt_node_property_int(node, "clock-frequency", &freq))
+		return;
+
+	clk_fixed_rate(names, freq);
+}

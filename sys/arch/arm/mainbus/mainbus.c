@@ -46,6 +46,7 @@
 #include <sys/systm.h>
 #include <sys/kernel.h>
 #include <sys/device.h>
+#include <machine/clock.h>
 
 #include <arm/mainbus/mainbus.h>
 
@@ -86,6 +87,9 @@ void
 mainbusattach(struct device *parent, struct device *self, void *aux)
 {
 	printf("\n");
+
+	/* Before attaching devices, make sure we have all clocks ready. */
+	clk_init();
 
 	config_search(mainbussearch, self, aux);
 }

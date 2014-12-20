@@ -18,6 +18,8 @@
 #include <sys/systm.h>
 #include <sys/malloc.h>
 #include <machine/clock.h>
+#include <machine/fdt.h>
+#include <arm/clock/clockvar.h>
 
 struct clk_list {
 	struct clk *		clk;
@@ -194,3 +196,48 @@ clk_dump(void)
 	}
 }
 #endif
+
+static struct {
+	void (*fn)();
+	char *compatible;
+} clk_provider[] = {
+	{ clk_fdt_fixed_rate, "fixed-clock" },
+	{ clk_fdt_fixed_factor, "fixed-factor-clock" },
+};
+
+static void
+clk_try_node(void *node)
+{
+	if (node == NULL)
+		return;
+
+	if (!fdt_node_property(node, "compatible", NULL))
+		return;
+
+	for (int i = 0; i < nitems(clk_provider); i++)
+		if (fdt_node_compatible(node, clk_provider[i].compatible))
+			clk_provider[i].fn(node);
+}
+
+static void
+clk_iterate(void *node)
+{
+	for (;
+	    node != NULL;
+	    node = fdt_next_node(node))
+	{
+		clk_iterate(fdt_child_node(node));
+		clk_try_node(node);
+	}
+}
+
+void
+clk_init(void)
+{
+	void *node = fdt_next_node(0);
+
+	if (node == NULL)
+		return;
+
+	clk_iterate(node);
+}

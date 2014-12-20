@@ -18,6 +18,8 @@
 #include <sys/systm.h>
 #include <sys/malloc.h>
 #include <machine/clock.h>
+#include <machine/fdt.h>
+#include <arm/clock/clockvar.h>
 
 struct clk_fixed_factor
 {
@@ -62,4 +64,32 @@ clk_fixed_factor(char *name, char *parent, uint32_t mul, uint32_t div)
 err:
 	free(clk, M_DEVBUF, sizeof(struct clk));
 	return NULL;
+}
+
+void
+clk_fdt_fixed_factor(void *node)
+{
+	char *names = fdt_node_name(node), *pnames;
+	uint32_t mult, div;
+	void *parent;
+	int phandle;
+
+	if (!fdt_node_property_int(node, "clock-div", &div))
+		return;
+
+	if (!fdt_node_property_int(node, "clock-mult", &mult))
+		return;
+
+	fdt_node_property(node, "clock-output-names", &names);
+
+	if (!fdt_node_property_int(node, "clocks", &phandle))
+		return;
+
+	if ((parent = fdt_find_node_by_phandle(NULL, phandle)) == NULL)
+		return;
+
+	if (!fdt_node_property(parent, "clock-output-names", &pnames))
+		return;
+
+	clk_fixed_factor(names, names, mult, div);
 }
