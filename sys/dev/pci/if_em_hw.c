@@ -113,6 +113,9 @@ static int32_t	em_read_eeprom_ich8(struct em_hw *, uint16_t, uint16_t,
 		    uint16_t *);
 static int32_t	em_write_eeprom_ich8(struct em_hw *, uint16_t, uint16_t,
 		    uint16_t *);
+static int32_t	em_read_eeprom_invm(struct em_hw *, uint16_t, uint16_t,
+		    uint16_t *);
+static int32_t	em_read_eeprom_invm_word(struct em_hw *, uint16_t, uint16_t *);
 static void	em_release_software_flag(struct em_hw *);
 static int32_t	em_set_d3_lplu_state(struct em_hw *, boolean_t);
 static int32_t	em_set_d0_lplu_state(struct em_hw *, boolean_t);
@@ -5523,6 +5526,12 @@ em_init_eeprom_params(struct em_hw *hw)
 			eecd &= ~E1000_EECD_AUPDEN;
 			E1000_WRITE_REG(hw, EECD, eecd);
 		}
+		if (em_is_onboard_invm_eeprom(hw) == TRUE) {
+			eeprom->type = em_eeprom_invm;
+			eeprom->word_size = INVM_SIZE;
+			eeprom->use_eerd = FALSE;
+			eeprom->use_eewr = FALSE;
+		}
 		break;
 	case em_80003es2lan:
 		eeprom->type = em_eeprom_spi;
@@ -5986,6 +5995,7 @@ em_read_eeprom(struct em_hw *hw, uint16_t offset, uint16_t words,
 	 * FW or other port software does not interrupt.
 	 */
 	if (em_is_onboard_nvm_eeprom(hw) == TRUE &&
+	    em_is_onboard_invm_eeprom(hw) == FALSE &&
 	    hw->eeprom.use_eerd == FALSE) {
 		/* Prepare the EEPROM for bit-bang reading */
 		if (em_acquire_eeprom(hw) != E1000_SUCCESS)
@@ -5998,6 +6008,11 @@ em_read_eeprom(struct em_hw *hw, uint16_t offset, uint16_t words,
 	/* ICH EEPROM access is done via the ICH flash controller */
 	if (eeprom->type == em_eeprom_ich8)
 		return em_read_eeprom_ich8(hw, offset, words, data);
+
+	/* Some i210/i211 have a special OTP chip */
+	if (eeprom->type == em_eeprom_invm)
+		return em_read_eeprom_invm(hw, offset, words, data);
+
 	/*
 	 * Set up the SPI or Microwire EEPROM for bit-bang reading.  We have
 	 * acquired the EEPROM at this point, so any returns should relase it
@@ -6178,6 +6193,27 @@ em_is_onboard_nvm_eeprom(struct em_hw *hw)
 			return FALSE;
 		}
 	}
+	return TRUE;
+}
+
+/******************************************************************************
+ * Description:     Determines if the onboard NVM is INVM.
+ *
+ * hw - Struct containing variables accessed by shared code
+ *****************************************************************************/
+STATIC boolean_t
+em_is_onboard_invm_eeprom(struct em_hw *hw)
+{
+	DEBUGFUNC("em_is_onboard_invm_eeprom");
+
+	/* Only on i210/i211. */
+	if (hw->mac_type != em_i210)
+		return FALSE;
+
+	/* If Flash Update bit is set, device is Flash type */
+	if (E1000_READ_REG(hw, EECD) & E1000_EECD_FLUPD)
+		return FALSE;
+
 	return TRUE;
 }
 
@@ -9725,6 +9761,85 @@ em_erase_ich8_4k_segment(struct em_hw *hw, uint32_t bank)
 	}
 	if (error_flag != 1)
 		error = E1000_SUCCESS;
+	return error;
+}
+
+/******************************************************************************
+ * Reads a 16 bit word or words from the OTP.
+ *
+ * Some values do not exist in the OTP, so return sane defaults.
+ *
+ * hw - Struct containing variables accessed by shared code
+ * offset - offset of word in the OTP to read
+ * data - word read from the OTP
+ * words - number of words to read
+ *****************************************************************************/
+STATIC int32_t
+em_read_eeprom_invm(struct em_hw *hw, uint16_t offset, uint16_t words,
+    uint16_t *data)
+{
+	int32_t  error = 0;
+	uint32_t i;
+
+	for (i = 0; i < words; i++) {
+		error = em_read_eeprom_invm_word(hw, offset + i, &data[i]);
+		if (error == E1000_SUCCESS)
+			continue;
+
+		switch (offset + i) {
+		/* Generate random address if there's no MAC address. */
+		case 0:
+		case 1:
+		case 2:
+			data[i] = 0xFFFF;
+			error = E1000_SUCCESS;
+			continue;
+		case EEPROM_ID_LED_SETTINGS:
+			data[i] = ID_LED_RESERVED_FFFF;
+			error = E1000_SUCCESS;
+			continue;
+		}
+		break;
+	}
+
+	return error;
+}
+
+/******************************************************************************
+ * Reads a 16 bit word from the OTP.
+ *
+ * hw - Struct containing variables accessed by shared code
+ * offset - offset of word in the OTP to read
+ * data - word read from the OTP
+ *****************************************************************************/
+STATIC int32_t
+em_read_eeprom_invm_word(struct em_hw *hw, uint16_t offset, uint16_t *data)
+{
+	int32_t  error = -E1000_NOT_IMPLEMENTED;
+	uint32_t reg_data;
+	uint16_t i;
+
+	for (i = 0; i < INVM_SIZE; i++) {
+		reg_data = E1000_READ_REG(hw, INVM_DATA_REG(i));
+		switch (INVM_DWORD_TO_RECORD_TYPE(reg_data)) {
+		case INVM_UNINITIALIZED_STRUCTURE:
+			break;
+		case INVM_CSR_AUTOLOAD_STRUCTURE:
+			i += INVM_CSR_AUTOLOAD_DATA_SIZE_IN_DWORDS;
+			continue;
+		case INVM_RSA_KEY_SHA256_STRUCTURE:
+			i += INVM_RSA_KEY_SHA256_DATA_SIZE_IN_DWORDS;
+			continue;
+		case INVM_WORD_AUTOLOAD_STRUCTURE:
+			if (INVM_DWORD_TO_WORD_ADDRESS(reg_data) == offset) {
+				*data = INVM_DWORD_TO_WORD_DATA(reg_data);
+				error = E1000_SUCCESS;
+				break;
+			}
+			continue;
+		}
+	}
+
 	return error;
 }
 
